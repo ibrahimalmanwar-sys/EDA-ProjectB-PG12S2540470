@@ -484,7 +484,112 @@ results_df = None
 )
 
 # STUDENT ADDITIONS — MODELING
-results_df = None
+# Chronological split + additional features + metrics table.
+
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+def safe_mape(y_true, y_pred):
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    denom = np.where(np.abs(y_true) < 1e-9, np.nan, np.abs(y_true))
+    value = np.nanmean(np.abs((y_true - y_pred) / denom)) * 100
+    return float(value) if np.isfinite(value) else np.nan
+
+enhanced_df = modeling_df.copy()
+
+# Extra student-added time-series features beyond the starter baseline.
+enhanced_df["lag_48"] = enhanced_df[target_col].shift(48)
+enhanced_df["lag_336"] = enhanced_df[target_col].shift(336)
+enhanced_df["rolling_mean_48"] = enhanced_df[target_col].shift(1).rolling(48).mean()
+enhanced_df["rolling_std_24"] = enhanced_df[target_col].shift(1).rolling(24).std()
+enhanced_df["demand_change_1"] = enhanced_df[target_col] - enhanced_df["lag_1"]
+enhanced_df["dayofweek"] = enhanced_df[timestamp_col].dt.dayofweek
+
+model_features = [
+    target_col,
+    "lag_1",
+    "lag_24",
+    "lag_48",
+    "lag_336",
+    "rolling_mean_24",
+    "rolling_mean_48",
+    "rolling_std_24",
+    "demand_change_1",
+    "hour",
+    "weekend",
+    "month",
+    "dayofweek",
+]
+
+model_data = enhanced_df.dropna(subset=model_features + ["y_target"]).copy()
+model_data["weekend"] = model_data["weekend"].astype(int)
+
+if len(model_data) < 100:
+    st.warning("Not enough rows after feature engineering for a reliable time-based split.")
+    results_df = None
+    predictions_df = pd.DataFrame()
+else:
+    split_idx = int(len(model_data) * 0.8)
+    train_df = model_data.iloc[:split_idx].copy()
+    test_df = model_data.iloc[split_idx:].copy()
+
+    X_train = train_df[model_features]
+    y_train = train_df["y_target"]
+    X_test = test_df[model_features]
+    y_test = test_df["y_target"]
+
+    models = {
+        "Persistence baseline": None,
+        "Linear Regression": LinearRegression(),
+        "Random Forest": RandomForestRegressor(
+            n_estimators=80,
+            max_depth=12,
+            min_samples_leaf=5,
+            random_state=42,
+            n_jobs=-1,
+        ),
+    }
+
+    predictions = {}
+    rows = []
+
+    for model_name, model in models.items():
+        if model is None:
+            y_pred = test_df[target_col].to_numpy()
+        else:
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+
+        predictions[model_name] = y_pred
+        rows.append(
+            {
+                "model": model_name,
+                "split": "chronological 80/20 test",
+                "train_rows": int(len(train_df)),
+                "test_rows": int(len(test_df)),
+                "MAE": round(mean_absolute_error(y_test, y_pred), 3),
+                "RMSE": round(np.sqrt(mean_squared_error(y_test, y_pred)), 3),
+                "MAPE": round(safe_mape(y_test, y_pred), 3),
+            }
+        )
+
+    results_df = pd.DataFrame(rows).sort_values("RMSE").reset_index(drop=True)
+    feature_columns = model_features
+
+    predictions_df = test_df[[timestamp_col]].copy()
+    predictions_df["actual"] = y_test.to_numpy()
+    for model_name, y_pred in predictions.items():
+        predictions_df[model_name] = y_pred
+    predictions_df["best_model"] = results_df.iloc[0]["model"]
+
+    st.subheader("Modeling evidence")
+    st.write("Time-based split: first 80% of rows for training, final 20% for testing.")
+    st.write(f"Training rows: **{len(train_df):,}** | Testing rows: **{len(test_df):,}**")
+    st.write("Student-added features include lag_48, lag_336, rolling_mean_48, rolling_std_24, demand_change_1, and dayofweek.")
+    st.dataframe(results_df, use_container_width=True)
+
 
 st.header("6. STUDENT ADDITIONS — DASHBOARD")
 st.info("Paste extra dashboard plots, KPIs, and interpretation below this marker in app.py.")
@@ -497,6 +602,55 @@ st.code(
 )
 
 # STUDENT ADDITIONS — DASHBOARD
+# Extra visuals and interpretation connected to the forecasting task.
+
+if "predictions_df" in globals() and isinstance(predictions_df, pd.DataFrame) and not predictions_df.empty:
+    best_model_name = predictions_df["best_model"].iloc[0]
+    best_metrics = results_df.loc[results_df["model"] == best_model_name].iloc[0]
+
+    st.subheader("Forecast dashboard additions")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Best model", str(best_model_name))
+    c2.metric("Best RMSE", f"{best_metrics['RMSE']:,.2f}")
+    c3.metric("Best MAPE", f"{best_metrics['MAPE']:,.2f}%")
+
+    plot_df = predictions_df.set_index(timestamp_col)[["actual", best_model_name]].tail(336)
+    st.write("Actual vs predicted demand for the final 336 test periods")
+    st.line_chart(plot_df)
+
+    residuals = predictions_df["actual"] - predictions_df[best_model_name]
+    residual_summary = pd.DataFrame(
+        {
+            "metric": ["mean residual", "median residual", "residual std", "largest absolute residual"],
+            "value": [
+                residuals.mean(),
+                residuals.median(),
+                residuals.std(),
+                residuals.abs().max(),
+            ],
+        }
+    )
+    st.write("Residual summary")
+    st.dataframe(residual_summary, use_container_width=True)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.hist(residuals.dropna(), bins=40)
+    ax.set_title(f"Residual distribution — {best_model_name}")
+    ax.set_xlabel("Actual minus predicted demand")
+    ax.set_ylabel("Count")
+    st.pyplot(fig)
+
+    st.markdown(
+        """
+        **Interpretation to mention in your export notes:**  
+        The chronological split tests the model on future observations only.  
+        Compare the machine-learning models against the persistence baseline and explain whether the RMSE/MAPE improvement is meaningful.  
+        Large residuals may happen around unusual demand periods, holidays, or sudden weather-related changes.
+        """
+    )
+else:
+    st.info("Run the modeling code first so the dashboard can display predictions and residuals.")
+
 
 st.header("7. Notes for export")
 data_integrity_notes = st.text_area(
