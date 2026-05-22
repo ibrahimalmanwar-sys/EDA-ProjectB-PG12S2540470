@@ -1,6 +1,35 @@
+# Core app framework
 streamlit
+
+# Data handling
 pandas
 numpy
+openpyxl
+xlrd
+pyarrow
+
+# Visualization and diagrams
+plotly
 matplotlib
-requests
+altair
+pydeck
+graphviz
+
+# Machine learning and statistics
 scikit-learn
+scipy
+statsmodels
+
+# App utilities
+requests
+python-dateutil
+pytz
+pillow
+
+# Optional advanced UI helpers
+streamlit-option-menu
+streamlit-extras
+streamlit-lottie
+
+# File/export helpers
+xlsxwriter
